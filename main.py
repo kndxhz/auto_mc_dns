@@ -172,6 +172,7 @@ def main():
     access = ""
     best_domain = ""
     best_delay = float("inf")
+    delays = {}
     for domain in DOMAINS:
         answers = dns_query(domain, "A")
         if answers != False:
@@ -179,6 +180,7 @@ def main():
             for answer in answers:
                 ip = answer
                 delay = tcp_ping(ip, 25565)
+                delays[domain] = delay
                 if delay and delay < best_delay:
                     best_delay = delay
                     best_domain = domain
@@ -190,12 +192,13 @@ def main():
                 srv_domain = answers[0].split(" ")[3]
                 port = int(answers[0].split(" ")[2])
                 delay = tcp_ping(ip, int(answers[0].split(" ")[2]))
+                delays[domain] = delay
                 if delay and delay < best_delay:
                     best_delay = delay
                     best_domain = domain
         else:
             print(f"Error: {domain} not found")
-
+    print(", ".join([f"{domain}:{delay}ms" for domain, delay in delays.items()]))
     print(f"Best domain: {best_domain} ({best_delay}ms)")
     if best_domain != "":
         if access == "A":
