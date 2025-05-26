@@ -39,6 +39,8 @@ def update_cloudflare_dns(
         response = requests.put(url, json=data, headers=headers)
         if response.status_code == 200:
             return True
+        elif "An identical record already exists." in response.text:
+            print("已经存在相同的记录了QAQ")
         else:
             print(f"更新 DNS 记录失败: {response.status_code}, {response.text}")
     except requests.exceptions.RequestException as e:
