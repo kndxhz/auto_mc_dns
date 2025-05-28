@@ -4,6 +4,61 @@ import time
 import requests
 
 
+def create_dns_record(
+    domain,
+    record_type,
+    ip,
+    cloudflare_api_token,
+    zone_id,
+    proxied=False,
+    priority=0,
+    weight=5,
+    port=25565,
+):
+    """
+    创建新的 DNS 记录
+    """
+    url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records"
+    headers = {
+        "Authorization": f"Bearer {cloudflare_api_token}",
+        "Content-Type": "application/json",
+    }
+
+    if record_type == "SRV":
+        data = {
+            "type": record_type,
+            "name": domain,
+            "data": {
+                "priority": priority,
+                "weight": weight,
+                "port": port,
+                "target": ip,
+            },
+            "ttl": 1,
+            "proxied": proxied,
+        }
+    else:
+        data = {
+            "type": record_type,
+            "name": domain,
+            "content": ip,
+            "ttl": 1,
+            "proxied": proxied,
+        }
+
+    try:
+        response = requests.post(url, json=data, headers=headers)
+        if response.status_code == 200:
+            print(f"DNS 记录创建成功: {record_type}")
+            return response.json().get("result", {}).get("id")
+        else:
+            print(f"创建 DNS 记录失败: {response.status_code}, {response.text}")
+            return None
+    except requests.exceptions.RequestException as e:
+        print(f"创建 DNS 记录失败: {e}")
+        return None
+
+
 def update_cloudflare_dns(
     domain, record_type, ip, proxied=False, priority=0, weight=5, port=25565
 ):
@@ -47,23 +102,44 @@ def update_cloudflare_dns(
         print(f"更新 DNS 记录失败: {e}")
 
 
-def get_or_create_dns_record(domain, cloudflare_api_token, zone_id):
+def get_or_create_dns_record(
+    domain, cloudflare_api_token, zone_id, record_type, ip, **kwargs
+):
     """
-    获取 DNS 记录 ID，如果记录不存在则创建新的记录
+    获取或创建 DNS 记录，确保SRV和A记录不会同时存在
     """
-    # 获取现有 DNS 记录
-    record_id = get_dns_record_id(domain, cloudflare_api_token, zone_id)
-    if record_id:
-        print(f"DNS 记录已存在，ID: {record_id}")
-        return record_id
+    # 检查A记录
+    a_record_id, a_record_type = get_dns_record_id(
+        domain, cloudflare_api_token, zone_id
+    )
+    # 检查SRV记录
+    srv_domain = f"_minecraft._tcp.{domain}"
+    srv_record_id, srv_record_type = get_dns_record_id(
+        srv_domain, cloudflare_api_token, zone_id
+    )
 
-    # 创建新的 DNS 记录
-    return create_dns_record(domain, cloudflare_api_token, zone_id)
+    # 删除现有记录
+    if a_record_id and a_record_type == "A":
+        delete_dns_record(a_record_id, cloudflare_api_token, zone_id)
+    if srv_record_id and srv_record_type == "SRV":
+        delete_dns_record(srv_record_id, cloudflare_api_token, zone_id)
+
+    # 创建新记录
+    if record_type == "SRV":
+        new_record_id = create_dns_record(
+            srv_domain, record_type, ip, cloudflare_api_token, zone_id, **kwargs
+        )
+    else:
+        new_record_id = create_dns_record(
+            domain, record_type, ip, cloudflare_api_token, zone_id, **kwargs
+        )
+
+    return new_record_id
 
 
 def get_dns_record_id(domain, cloudflare_api_token, zone_id):
     """
-    获取 DNS 记录 ID
+    获取 DNS 记录 ID 和类型
     """
     headers = {
         "Authorization": f"Bearer {cloudflare_api_token}",
@@ -78,49 +154,38 @@ def get_dns_record_id(domain, cloudflare_api_token, zone_id):
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
         print(f"请求失败: {e}")
-        return None
+        return None, None
 
     records = response.json().get("result", [])
     for record in records:
         if record["name"] == domain:
-            return record["id"]
-    return None
+            return record["id"], record["type"]
+    return None, None
 
 
-def create_dns_record(domain, cloudflare_api_token, zone_id):
+def delete_dns_record(record_id, cloudflare_api_token, zone_id):
     """
-    创建新的 DNS 记录
+    删除 DNS 记录
     """
+    url = (
+        f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{record_id}"
+    )
     headers = {
         "Authorization": f"Bearer {cloudflare_api_token}",
         "Content-Type": "application/json",
     }
 
-    url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records"
-
-    # 默认创建 A 记录，指向 1.1.1.1（可以根据需要修改）
-    data = {
-        "type": "A",
-        "name": domain,
-        "content": "1.1.1.1",
-        "ttl": 120,
-        "proxied": False,
-    }
-
     try:
-        response = requests.post(url, headers=headers, json=data)
-        response.raise_for_status()
+        response = requests.delete(url, headers=headers)
+        if response.status_code == 200:
+            print("DNS 记录删除成功")
+            return True
+        else:
+            print(f"删除 DNS 记录失败: {response.status_code}, {response.text}")
+            return False
     except requests.exceptions.RequestException as e:
-        print(f"创建记录失败: {e}")
-        return None
-
-    result = response.json().get("result")
-    if result:
-        print(f"DNS 记录创建成功，ID: {result['id']}")
-        return result["id"]
-    else:
-        print("创建记录失败")
-        return None
+        print(f"删除 DNS 记录失败: {e}")
+        return False
 
 
 def dns_query(domain, record_type):
@@ -133,12 +198,12 @@ def dns_query(domain, record_type):
     except dns.resolver.NXDOMAIN:
         return False
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"错误: {e}")
 
 
 def tcp_ping(ip, port, count=5):
     delays = []
-    print(f"Pinging {ip}...")
+    print(f"正在 ping {ip}...")
     for _ in range(count):
         packet = IP(dst=ip) / TCP(dport=port, flags="S")
         start_time = time.time()
@@ -147,9 +212,9 @@ def tcp_ping(ip, port, count=5):
             end_time = time.time()
             delay = (end_time - start_time) * 1000  # 转换为毫秒
             delays.append(delay)
-            print(f"Reply from {ip}: time={delay:.2f}ms")
+            print(f"来自 {ip} 的回复: 时间={delay:.2f}ms")
         else:
-            print(f"Request timed out for {ip}")
+            print(f"对 {ip} 的请求超时")
     if delays:
         avg_delay = sum(delays) / len(delays)
 
@@ -197,20 +262,29 @@ def main():
                     best_delay = delay
                     best_domain = domain
         else:
-            print(f"Error: {domain} not found")
+            print(f"错误: {domain} 未找到")
     print(", ".join([f"{domain}:{delay}ms" for domain, delay in delays.items()]))
-    print(f"Best domain: {best_domain} ({best_delay}ms)")
+    print(f"最佳域名: {best_domain} ({best_delay}ms)")
     if best_domain != "":
         if access == "A":
-            update_cloudflare_dns(DOMAIN, "A", best_domain)
+            # 获取最佳域名的IP地址
+            best_ip = dns_query(best_domain, "A")[0]
+            record_id = get_or_create_dns_record(
+                DOMAIN, CLOUDFLARE_API_TOKEN, ZONE_ID, "A", best_ip
+            )
         elif access == "SRV":
-            update_cloudflare_dns(
-                f"_minecraft._tcp.{DOMAIN}", "SRV", srv_domain, port=port
+            record_id = get_or_create_dns_record(
+                DOMAIN, CLOUDFLARE_API_TOKEN, ZONE_ID, "SRV", srv_domain, port=port
             )
         else:
-            print("Error: Unknown access type")
+            print("错误: 未知访问类型")
+
+        if record_id:
+            print(f"DNS 记录操作成功，记录ID: {record_id}")
+        else:
+            print("DNS 记录操作失败")
     else:
-        print("Error: No domain found")
+        print("错误: 未找到域名")
 
 
 if __name__ == "__main__":
@@ -222,9 +296,9 @@ if __name__ == "__main__":
         "b4.ranmc.cc",
         "b5.ranmc.cc",
     ]
-    DOMAIN = "example.com"
-    CLOUDFLARE_API_TOKEN = "your_cloudflare_api_token"
-    ZONE_ID = "your_zone_id"  # 替换为你的 Zone ID
-    RECORD_ID = get_or_create_dns_record(DOMAIN, CLOUDFLARE_API_TOKEN, ZONE_ID)
+    DOMAIN = "你要解析的域名"
+    CLOUDFLARE_API_TOKEN = "cf的key"
+    ZONE_ID = "域名区域id"  # 替换为你的 Zone ID
+    # RECORD_ID = get_or_create_dns_record(DOMAIN, CLOUDFLARE_API_TOKEN, ZONE_ID)
 
     main()
